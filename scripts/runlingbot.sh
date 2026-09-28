@@ -23,6 +23,8 @@ ASSETS="$ROOT/models/lingbot-world-v2-assets"
 EMBEDS="$LINGBOT/output/embeds_17f"
 VAE_PTH="$ASSETS/Wan2.1_VAE.pth"
 ACTION="examples/03"
+# MLX 侧自行加载 blocks/head 权重（官方加载器会跳过 blocks.* key）
+export LINGBOT_INDEX="$CKPT/model.safetensors.index.json"
 
 SIZE="${SIZE:-320*448}"
 FRAMES="${FRAMES:-9}"

@@ -49,6 +49,8 @@
 
 ## 6. 运行命令（官方 generate.py + MLX_BACKEND 开关）
 
+> 推荐直接使用 `scripts/runlingbot.sh`（会自动设置 `LINGBOT_INDEX` 指向 MLX 权重索引）。以下为等价的手动命令：
+
 ```bash
 # 段 1：VAE encode
 (cd lingbot-world-v2 && env FORCE_CPU=1 FORCE_CPU_F32=1 MLX_BACKEND=1 \

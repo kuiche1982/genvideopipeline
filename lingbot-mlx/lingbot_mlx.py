@@ -288,7 +288,12 @@ def forward(x, e0, e2, ctx, c2ws, W, grid=(3, 17, 31), nlayers=30, num_heads=12)
 # ----------------------------------------------------------------------------
 
 _W_GLOBAL = None
-_INDEX_PATH = "/Users/liujiangping/kuiwork/workdir2/animation/models/lingbot-world-v2-1.3b-causal-fast/model.safetensors.index.json"
+# 权重索引路径：由环境变量 LINGBOT_INDEX 指定（scripts/runlingbot.sh 会自动设置），
+# 默认相对仓库根目录，便于单独调试。
+_INDEX_PATH = os.environ.get(
+    "LINGBOT_INDEX",
+    "models/lingbot-world-v2-1.3b-causal-fast/model.safetensors.index.json",
+)
 
 
 def _get_W():
@@ -339,7 +344,8 @@ def load_pt(p):
 
 
 def main():
-    base = "/Users/liujiangping/kuiwork/workdir2/animation"
+    # 对齐 CLI：仓库根目录可用 LINGBOT_BASE 覆盖（默认当前目录）
+    base = os.environ.get("LINGBOT_BASE", ".")
     idx = f"{base}/models/lingbot-world-v2-1.3b-causal-fast/model.safetensors.index.json"
     gd = os.environ.get("GOLDEN_DIR", "/tmp/golden1")
     t0 = int(os.environ.get("T_STEP", "999"))
