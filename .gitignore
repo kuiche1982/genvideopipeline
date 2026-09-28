@@ -1,0 +1,19 @@
+# Personal / generated artifacts — never commit
+data/
+models/
+runs/
+output/
+*.avi
+*.mp4
+*.bin
+*.pt
+*.npy
+*.png
+*.jpg
+*.jpeg
+
+# Tooling
+.venv/
+__pycache__/
+.DS_Store
+*.log
