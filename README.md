@@ -1,82 +1,84 @@
-# genvideopipeline — 在 Mac M2 16G 上本地跑视频生成（四段式）
+# genvideopipeline — Local Video Generation on Mac M2 16G (4-Stage Split)
 
-个人实验项目：在 Apple Silicon **16GB 统一内存**的 Mac 上，把 5B / 1.3B 视频扩散模型用**四段式**拆分跑通本地视频生成。仅作方法记录，仅供参考。
+> 中文版：[README.zh.md](README.zh.md)
 
-## 为什么是「四段式」
+Personal experiment: running 5B / 1.3B video diffusion models locally on an Apple Silicon Mac with **16GB unified memory** by splitting the pipeline into **4 sequential stages**. Method notes only, for reference.
 
-视频生成全流程（文本编码 → VAE encode → DiT 采样 → VAE decode）单进程跑，峰值内存 **30G+**，16G 机器必死机。四段式把管线拆成 4 个**独立进程、严格串行**执行，每段只加载自己需要的模型、跑完即释放，内存不叠加，峰值降到 **8–12GB**。
+## Why "4-stage"
 
-## 管线一：Wan2.2-TI2V-5B（sd-cli + python 官方 VAE）
+A monolithic video generation pipeline (text encoding → VAE encode → DiT sampling → VAE decode) peaks above **30GB** — fatal on a 16GB machine. The 4-stage split runs 4 **independent processes strictly serially**, each loading only what it needs and releasing memory on exit, so memory never stacks: peak drops to **8–12GB**.
 
-```
-段1  T5 编码      sd-cli --save-text-embedding（T5 与图无关，不加载 DiT/VAE）
-段2  VAE encode   python scripts/wan22_vae_encode.py（官方 Wan2.2 VAE，16x 归一化 latent）
-段3  DiT 采样     sd-cli --load-init-latent + --save-latent
-段4  decode       python scripts/wan22_vae_decode.py（完整 VAE，最终画质）| sd-cli TAE（快速确认）
-```
-
-- 脚本：`scripts/runwan.sh <workdir> <prompt> <start_image>`
-- 峰值内存 ~12GB；验证配置 320×448 / 49 帧 / 30 步。
-- 详细结论见 `docs/wan22-4stage.md`。
-
-**两条铁律（已实证）**：
-1. **latent 空间必须成对**：完整 VAE↔完整 VAE、TAE↔TAE，混用 = 马赛克/花屏。
-2. **sd-cpp 的 DiT 只吃 TAE latent**：喂官方 VAE latent 分布不匹配（花屏）。要完整 VAE 高画质，DiT 也必须走官方实现（python torch 或 MLX）。
-
-## 管线二：LingBot-World-V2 1.3B（MLX 30 层 DiT）
+## Pipeline 1: Wan2.2-TI2V-5B (sd-cli + official python VAE)
 
 ```
-段1  VAE encode   输入图 → 输入 latent（.pt）
-段2  DiT 采样     MLX 30 层 forward（bf16 权重 2.6GB，不加载 VAE/T5）→ latent.bin
-段3  VAE decode   lingbot-mlx/decode_latent.py（只加载 Wan2.1 VAE）→ mp4
-段4  封装          ffmpeg
+Stage 1  T5 encode     sd-cli --save-text-embedding (T5 is image-independent)
+Stage 2  VAE encode    python scripts/wan22_vae_encode.py (official Wan2.2 VAE, 16x normalized latent)
+Stage 3  DiT sampling  sd-cli --load-init-latent + --save-latent
+Stage 4  decode        python scripts/wan22_vae_decode.py (full VAE, final quality) | sd-cli TAE (quick check)
 ```
 
-- 脚本：`scripts/runlingbot.sh <workdir> <prompt> [start_image]`
-- 峰值内存 **30G → 8G**；总时长 ~3min（9 帧 320×432）；输出与完整流程 **bit 一致**。
-- 详细记录见 `docs/lingbot-mlx.md`。
+- Script: `scripts/runwan.sh <workdir> <prompt> <start_image>`
+- Peak memory ~12GB; verified at 320×448 / 49 frames / 30 steps.
+- Details: `docs/wan22-4stage.md` (Chinese).
 
-## 内存与参数经验
+**Two verified rules**:
+1. **Latent spaces must pair**: full-VAE↔full-VAE, TAE↔TAE. Mixing produces mosaic artifacts.
+2. **sd-cpp's DiT only accepts TAE latents** (official VAE latents mismatch → corrupted output). For full-VAE quality, the DiT must also run on the official implementation (python torch or MLX).
 
-| 规律 | 结论 |
+## Pipeline 2: LingBot-World-V2 1.3B (MLX 30-layer DiT)
+
+```
+Stage 1  VAE encode    input image → input latent (.pt)
+Stage 2  DiT sampling  MLX 30-layer forward (bf16 weights 2.6GB, no VAE/T5 loaded) → latent.bin
+Stage 3  VAE decode    lingbot-mlx/decode_latent.py (Wan2.1 VAE only) → mp4
+Stage 4  mux           ffmpeg
+```
+
+- Script: `scripts/runlingbot.sh <workdir> <prompt> [start_image]`
+- Peak memory **30GB → 8GB**; ~3min total (9 frames 320×432); output **bit-identical** to the monolithic run.
+- Details: `docs/lingbot-mlx.md` (Chinese).
+
+## Memory & parameter experience
+
+| Rule | Finding |
 |---|---|
-| 内存由什么决定 | **latent 总元素数（帧数 × 分辨率）**，与采样步数无关 |
-| 分辨率上限 | M2 Metal ≥480×832 会**静默损坏 latent**（模糊色块），384×640 是验证过的安全上限 |
-| 帧数下限 | <9 帧会 glitch（画面撕裂），9 帧起步 |
-| 超内存表现 | 触发 swap，机器卡死——探测时盯着活动监视器，稳定不涨才安全 |
-| 探测顺序 | 帧数（9→17→25→33）→ 分辨率 → 步数（10/20/30，只影响质量与速度） |
+| What drives memory | **Total latent elements (frames × resolution)** — independent of sampling steps |
+| Resolution ceiling | M2 Metal silently corrupts latents at ≥480×832; 384×640 is the verified safe max |
+| Frame floor | <9 frames glitches (tearing); start at 9 |
+| Out-of-memory | Triggers swap → machine freezes. Watch Activity Monitor while probing |
+| Probe order | frames (9→17→25→33) → resolution → steps (10/20/30, quality/speed only) |
 
-## 模型与工具（官方链接）
+## Models & tools (official links)
 
-| 组件 | 来源 |
+| Component | Source |
 |---|---|
-| Wan2.2 代码 | https://github.com/Wan-Video/Wan2.2 |
-| Wan2.2-TI2V-5B 权重 | https://modelscope.cn/models/Wan-AI/Wan2.2-TI2V-5B |
-| stable-diffusion.cpp（sd-cli） | https://github.com/leejet/stable-diffusion.cpp |
-| TAEHV（Wan2.1 TAE） | https://github.com/madebyollin/taehv |
-| LingBot-World-V2 代码 | https://github.com/robbyant/lingbot-world-v2 |
-| LingBot 1.3B 权重 | https://modelscope.cn/models/Robbyant/lingbot-world-v2-1.3b-causal-fast |
+| Wan2.2 code | https://github.com/Wan-Video/Wan2.2 |
+| Wan2.2-TI2V-5B weights | https://modelscope.cn/models/Wan-AI/Wan2.2-TI2V-5B |
+| stable-diffusion.cpp (sd-cli) | https://github.com/leejet/stable-diffusion.cpp |
+| TAEHV (Wan2.1 TAE) | https://github.com/madebyollin/taehv |
+| LingBot-World-V2 code | https://github.com/robbyant/lingbot-world-v2 |
+| LingBot 1.3B weights | https://modelscope.cn/models/Robbyant/lingbot-world-v2-1.3b-causal-fast |
 | Apple MLX | https://github.com/ml-explore/mlx |
-| ComfyUI-Ovi（Wan2.2 VAE 参考） | https://github.com/snicolast/ComfyUI-Ovi |
+| ComfyUI-Ovi (Wan2.2 VAE reference) | https://github.com/snicolast/ComfyUI-Ovi |
 
-本地模型权重（GGUF/safetensors）体积大，需按上述来源自行下载；**仓库不含任何权重、样例图片、密钥或个人数据**，起始图由用户自行提供。
+Model weights (GGUF/safetensors) are large — download them yourself from the sources above. **This repo contains no weights, sample images, credentials, or personal data**; provide your own start image.
 
-## 目录结构
+## Layout
 
 ```
 genvideopipeline/
-├── README.md / README.en.md
+├── README.md / README.zh.md
 ├── LICENSE
 ├── docs/
-│   ├── wan22-4stage.md      # Wan2.2-TI2V-5B 四段式结论与修复记录
-│   └── lingbot-mlx.md       # LingBot MLX 四段式记录
+│   ├── wan22-4stage.md      # Wan2.2-TI2V-5B 4-stage conclusions & fixes
+│   └── lingbot-mlx.md       # LingBot MLX 4-stage record
 ├── scripts/
-│   ├── runwan.sh            # Wan2.2-TI2V-5B 四段式
-│   ├── runlingbot.sh        # LingBot MLX 四段式
+│   ├── runwan.sh            # Wan2.2-TI2V-5B 4-stage
+│   ├── runlingbot.sh        # LingBot MLX 4-stage
 │   ├── wan22_vae_encode.py
 │   ├── wan22_vae_decode.py
-│   └── wan22_vae2_2_official.py  # Wan2.2 VAE 实现（Alibaba Wan Team 版权）
+│   └── wan22_vae2_2_official.py  # Wan2.2 VAE implementation (Alibaba Wan Team copyright)
 └── lingbot-mlx/
-    ├── lingbot_mlx.py       # 30 层 DiT MLX 实现
-    └── decode_latent.py     # VAE-only 解码
+    ├── lingbot_mlx.py       # 30-layer DiT MLX implementation
+    └── decode_latent.py     # VAE-only decode
 ```
